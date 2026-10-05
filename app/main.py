@@ -1,5 +1,6 @@
 import os
 import sqlite3
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -7,11 +8,15 @@ from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
+from opentelemetry.trace import Status, StatusCode
 from pydantic import BaseModel, Field
+
+from app import telemetry
 
 
 DB_PATH = Path(os.getenv("ORDER_DB_PATH", "data/orders.db"))
 STATUSES = {"received", "preparing", "shipped", "delivered"}
+logger = telemetry.get_logger()
 
 
 def connect():
@@ -55,7 +60,7 @@ def order_detail(row):
     order = as_dict(row)
     if order["priority"] == "express":
         placed_at = datetime.fromisoformat(order["created_at"])
-        estimated_at = placed_at.replace(day=placed_at.day + 2)
+        estimated_at = placed_at + timedelta(days=2)
         order["estimated_delivery"] = estimated_at.date().isoformat()
     return order
 
@@ -73,10 +78,19 @@ class StatusUpdate(BaseModel):
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     init_db()
-    yield
+    try:
+        yield
+    finally:
+        telemetry.shutdown()
 
 
 app = FastAPI(title="Order Tracker", lifespan=lifespan)
+app.add_middleware(
+    telemetry.RequestMetricsMiddleware,
+    meter=telemetry.get_meter(),
+    logger=logger,
+)
+telemetry.configure(app)
 
 
 @app.get("/")
@@ -100,11 +114,37 @@ def list_orders():
 
 @app.get("/api/orders/{order_id}")
 def get_order(order_id: str):
-    with connect() as db:
-        row = db.execute("SELECT * FROM orders WHERE id = ?", (order_id,)).fetchone()
-    if row is None:
-        raise HTTPException(404, "Order not found")
-    return order_detail(row)
+    tracer = telemetry.get_tracer()
+    started = time.perf_counter()
+    with tracer.start_as_current_span("orders.lookup") as span:
+        span.set_attribute("order.id", order_id)
+        with connect() as db:
+            row = db.execute("SELECT * FROM orders WHERE id = ?", (order_id,)).fetchone()
+        if row is None:
+            span.set_attribute("order.found", False)
+            span.set_status(Status(StatusCode.ERROR, "order not found"))
+            span.add_event("orders.lookup.not_found")
+            logger.warning(
+                "order_lookup",
+                extra={"order.id": order_id, "order.found": False},
+            )
+            telemetry.record_lookup(None, time.perf_counter() - started)
+            raise HTTPException(404, "Order not found")
+        order = order_detail(row)
+        span.set_attribute("order.found", True)
+        span.set_attribute("order.status", order["status"])
+        span.set_attribute("order.priority", order["priority"])
+        logger.info(
+            "order_lookup",
+            extra={
+                "order.id": order_id,
+                "order.found": True,
+                "order.status": order["status"],
+                "order.priority": order["priority"],
+            },
+        )
+        telemetry.record_lookup(order, time.perf_counter() - started)
+        return order
 
 
 @app.post("/api/orders", status_code=201)

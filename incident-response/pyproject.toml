@@ -1,0 +1,14 @@
+[project]
+name = "incident-responder"
+version = "0.1.0"
+description = "Receives Grafana alerts, captures evidence, and drives a headless coding assistant"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115,<1",
+  "httpx>=0.27,<1",
+  "uvicorn>=0.30,<1",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = [".", ".."]

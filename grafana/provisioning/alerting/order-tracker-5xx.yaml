@@ -1,0 +1,75 @@
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: order-tracker-api-5xx
+    folder: Order Tracker
+    interval: 30s
+    rules:
+      - uid: order-tracker-5xx
+        title: "Order Tracker API - 5xx server errors"
+        condition: B
+        data:
+          - refId: A
+            queryType: ""
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              datasource:
+                type: prometheus
+                uid: prometheus
+              editorMode: code
+              expr: >-
+                sum by (http_route, http_response_status_code) (round(increase(http_server_request_count_total{otel_scope_name="order-tracker", http_response_status_code=~"5.."}[5m])))
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            queryType: ""
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params:
+                      - 0
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - B
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: A
+              refId: B
+              type: threshold
+        noDataState: NoData
+        execErrState: Error
+        for: 0s
+        keepFiringFor: 0s
+        dashboardUid: order-tracker-api
+        panelId: 2
+        annotations:
+          summary: >-
+            5xx server errors on the Order Tracker API: {{ $values.A }} in the last 5m window
+          description: >-
+            The Order Tracker API returned server errors (HTTP 5xx).
+            Endpoint: {{ $labels.http_route }} (status {{ $labels.http_response_status_code }}).
+            Responses counted in window: {{ $values.A }}.
+            Time window: last 5 minutes (PromQL increase over [5m]).
+            Dashboard: http://localhost:3000/d/order-tracker-api/order-tracker-api?viewPanel=2
+            Logs (Loki): {service_name="order-tracker", http_route="{{ $labels.http_route }}"}
+            Traces (Tempo): http://localhost:3200/search?tags=service.name%3Dorder-tracker
+        labels:
+          severity: critical
+          service: order-tracker
+          alert_type: server_errors
+        isPaused: false
